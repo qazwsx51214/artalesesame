@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <title>Artale 公共頻道外接系統</title>
+  <style>
+    body {
+      background-color: #fff;
+      font-family: 'Segoe UI', sans-serif;
+      color: #111;
+      margin: 0;
+      padding: 20px;
+    }
+    h2 {
+      margin-bottom: 20px;
+      color: #222;
+    }
+    #log {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-height: 85vh;
+      overflow-y: auto;
+    }
+    .msg-card {
+      background-color: #fff;
+      border-left: 4px solid #0078d7;
+      padding: 12px 16px;
+      border-radius: 6px;
+      box-shadow: 0 0 4px rgba(0, 0, 0, 0.08);
+      position: relative;
+    }
+    .msg-header {
+      display: flex;
+      justify-content: flex-start;
+      align-items: center;
+      margin-bottom: 4px;
+      gap: 12px;
+    }
+    .timestamp {
+      font-size: 0.9em;
+      color: #888;
+    }
+    .channel-info, .profile-code {
+      font-size: 0.85em;
+      color: #333;
+    }
+    .channel-info {
+      color: #0078d7;
+      font-weight: bold;
+    }
+    .nickname {
+      font-weight: bold;
+      color: #0056b3;
+    }
+    .text {
+      margin-top: 4px;
+      white-space: pre-wrap;
+      color: #111;
+    }
+    .tag-button {
+      display: inline-block;
+      background-color: #f2f2f2;
+      color: #333;
+      padding: 2px 8px;
+      font-size: 0.75em;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-left: 8px;
+      transition: background 0.2s, color 0.2s;
+      border: 1px solid #ccc;
+    }
+    .tag-button:hover {
+      background-color: #0078d7;
+      color: #fff;
+    }
+    .highlight {
+      background: yellow;
+      color: #d00;
+      font-weight: bold;
+      padding: 0 2px;
+      border-radius: 2px;
+    }
+    #keyword-box {
+      position: absolute;
+      top: 24px;
+      right: 32px;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #keyword-input {
+      padding: 4px 8px;
+      font-size: 1em;
+      border: 1px solid #aaa;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <!-- pal-helper 工具條（右上角） -->
+  <div id="pal-toolbar" style="position:fixed;top:8px;right:32px;z-index:9999;background:rgba(255,255,255,0.95);border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.12);padding:10px 18px;display:flex;flex-direction:column;align-items:flex-start;gap:6px;">
+    <div style="display:flex;align-items:center;gap:10px;">
+      <label><input type="checkbox" id="pal-buy">買/收</label>
+      <label><input type="checkbox" id="pal-sell">賣/出/售</label>
+      <label>關鍵字：</label>
+      <input id="pal-keyword" type="text" placeholder="輸入關鍵字（可空格分隔多組）" style="padding:4px 8px;">
+      <label><input type="checkbox" id="pal-playsound" checked>播放音效</label>
+      <label><input type="checkbox" id="pal-autoscroll" checked>自動捲動</label>
+    </div>
+    <div style="width:95%;margin-top:2px;">
+      <input id="pal-code" type="text" placeholder="Code關鍵字:支援and或or(要空格)、括號。例如收 and (敏捷 or 幸運)" style="width:100%;padding:4px 8px;">
+    </div>
+  </div>
+  <h2>📡 Artale 公共頻道外接系統 (顯示 <span id="minutes-display">載入中...</span> 分鐘內訊息) 
+    <input type="number" id="manual-minutes" min="1" max="1440" value="120" style="width: 60px; margin-left: 10px; padding: 4px;">
+    <button onclick="setManualMinutes()" style="margin-left: 5px; padding: 6px 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.8em;">⚙️ 設定</button>
+  </h2>
+  <div id="log"></div>
+
+  <script>
+    // ====== 可調整的顯示分鐘數 ======
+    let BROADCAST_MINUTES = 120; // 預設值120分鐘
+    
+
+    
+    // 更新頁面顯示
+    function updateDisplay() {
+      const displayElement = document.getElementById('minutes-display');
+      if (displayElement) {
+        displayElement.textContent = BROADCAST_MINUTES;
+      }
+      
+      // 同步更新手動輸入框
+      const manualInput = document.getElementById('manual-minutes');
+      if (manualInput && manualInput.value != BROADCAST_MINUTES) {
+        manualInput.value = BROADCAST_MINUTES;
+      }
+    }
+    
+
+    
+    // 手動設定分鐘數並重新載入歷史訊息
+    async function setManualMinutes() {
+      const input = document.getElementById('manual-minutes');
+      const minutes = parseInt(input.value);
+      
+      if (minutes > 0 && minutes <= 1440) {
+        BROADCAST_MINUTES = minutes;
+        console.log(`⚙️ 手動設定：顯示 ${minutes} 分鐘內的訊息`);
+        updateDisplay();
+        
+        // 直接載入歷史訊息
+        await loadHistoryMessages();
+      } else {
+        alert('請輸入1到1440之間的數字（代表分鐘數）');
+        input.value = BROADCAST_MINUTES;
+      }
+    }
+    
+
+    
+    // 從歷史檔案載入訊息
+    async function loadHistoryMessages() {
+      try {
+        console.log('📖 開始載入歷史訊息...');
+        
+        // 清空現有內容
+        const logDiv = document.getElementById("log");
+        logDiv.innerHTML = '';
+        
+        const response = await fetch('history_messages.json?' + Date.now());
+        
+        if (!response.ok) {
+          console.log('📝 歷史檔案不存在或無法讀取');
+          return;
+        }
+        
+        const text = await response.text();
+        const lines = text.trim().split('\n');
+        const now = Date.now();
+        const maxAge = BROADCAST_MINUTES * 60 * 1000;
+        let loadedCount = 0;
+        let displayedCount = 0;
+        
+        const validMessages = [];
+        
+        for (const line of lines) {
+          if (line.trim()) {
+            try {
+              const msg = JSON.parse(line);
+              loadedCount++;
+              
+              // 檢查時間範圍
+              const timestamp = msg.timestamp || "";
+              if (timestamp) {
+                try {
+                  const timeStr = timestamp.replace(/[\[\]]/g, '');
+                  const msgTime = new Date(timeStr);
+                  
+                  if (isFinite(msgTime.getTime())) {
+                    const diffMs = now - msgTime.getTime();
+                    if (diffMs <= maxAge) {
+                      // 檢查是否符合過濾條件
+                      const state = getFilterState();
+                      const hasFilter = state.code !== '' || state.buy || state.sell || state.keywords.length > 0;
+                      
+                      if (!hasFilter || isMessageHighlighted(msg)) {
+                        validMessages.push(msg);
+                        displayedCount++;
+                      }
+                    }
+                  }
+                } catch (e) {
+                  console.log('⚠️ 無效時間格式:', timestamp);
+                }
+              }
+            } catch (e) {
+              console.log('❌ JSON解析失敗:', line);
+            }
+          }
+        }
+        
+        // 按時間順序排序（最舊的在前面）
+        validMessages.sort((a, b) => {
+          try {
+            const timeA = new Date(a.timestamp.replace(/[\[\]]/g, ''));
+            const timeB = new Date(b.timestamp.replace(/[\[\]]/g, ''));
+            return timeA.getTime() - timeB.getTime();
+          } catch (e) {
+            return 0;
+          }
+        });
+        
+        // 顯示訊息
+        validMessages.forEach(msg => {
+          displayHistoryMessage(msg);
+        });
+        
+        // 更新 allMessages
+        allMessages = [...validMessages];
+        
+        console.log(`📊 載入統計: 讀取 ${loadedCount} 條訊息，顯示 ${displayedCount} 條符合 ${BROADCAST_MINUTES} 分鐘內的訊息`);
+        scrollToBottom();
+      } catch (e) {
+        console.log('❌ 載入歷史訊息失敗:', e);
+      }
+    }
+    
+    // 顯示歷史訊息
+    function displayHistoryMessage(data) {
+      const logDiv = document.getElementById("log");
+      const ts = data.timestamp || "";
+      const nick = data.Nickname || "";
+      const rawText = data.Text || "";
+      const text = highlightText(rawText);
+      const channel = data.Channel || "";
+      const profileCode = data.ProfileCode || "";
+      const friendTag = `${nick}#${profileCode}`;
+
+      const card = document.createElement("div");
+      card.className = "msg-card";
+
+      card.innerHTML = `
+        <div class="msg-header">
+          <div class="timestamp">${ts}</div>
+          <div class="channel-info">${channel}</div>
+          <div class="profile-code">識別碼: ${profileCode}</div>
+          <div class="tag-button" onclick="copyToClipboard('${friendTag}', this)">複製好友</div>
+        </div>
+        <div><span class="nickname">${nick}</span>: <span class="text">${text}</span></div>
+      `;
+
+      logDiv.appendChild(card);
+    }
+    
+    // 初始化顯示
+    updateDisplay();
+    
+    // 載入歷史訊息
+    setTimeout(async () => {
+      await loadHistoryMessages();
+    }, 1000);
+    
+    // 定期清理舊訊息（每30秒清理一次，降低頻率）
+    setInterval(() => {
+      cleanupOldMessages();
+    }, 30000);
+    
+
+    
+    // 清理超過時間的舊訊息
+    function cleanupOldMessages() {
+      const logDiv = document.getElementById("log");
+      const cards = logDiv.querySelectorAll('.msg-card');
+      let removedCount = 0;
+      const now = Date.now();
+      const maxAge = BROADCAST_MINUTES * 60 * 1000; // 毫秒
+      
+      cards.forEach(card => {
+        const timestampElement = card.querySelector('.timestamp');
+        if (timestampElement) {
+          const timestampText = timestampElement.textContent.trim().replace(/[\[\]]/g, '');
+          try {
+            const msgTime = new Date(timestampText);
+            if (isFinite(msgTime.getTime())) {
+              const diffMs = now - msgTime.getTime();
+              if (diffMs > maxAge) {
+                card.remove();
+                removedCount++;
+              }
+            }
+          } catch (e) {
+            card.remove();
+            removedCount++;
+          }
+        }
+      });
+      
+      if (removedCount > 0) {
+        console.log(`🧹 清理了 ${removedCount} 條超過 ${BROADCAST_MINUTES} 分鐘的舊訊息`);
+      }
+    }
+
+    // ===== pal-helper 功能整合 =====
+    let audio = null;
+    function playSound() {
+      if (!audio) {
+        audio = document.createElement('audio');
+        audio.src = 'sound.wav';
+        document.body.appendChild(audio);
+      }
+      audio.currentTime = 0;
+      audio.play();
+    }
+    
+    // 解析布林運算式（支援and/or/括號巢狀）
+    function parseBooleanExpr(expr) {
+      const tokens = [];
+      const re = /\(|\)|\band\b|\bor\b|[^\s()]+/gi;
+      let m;
+      while ((m = re.exec(expr))) {
+        tokens.push(m[0]);
+      }
+      let pos = 0;
+      function parseExpr() {
+        let node = parseTerm();
+        while (tokens[pos] && /^or$/i.test(tokens[pos])) {
+          pos++;
+          node = { type: 'or', left: node, right: parseTerm() };
+        }
+        return node;
+      }
+      function parseTerm() {
+        let node = parseFactor();
+        while (tokens[pos] && /^and$/i.test(tokens[pos])) {
+          pos++;
+          node = { type: 'and', left: node, right: parseFactor() };
+        }
+        return node;
+      }
+      function parseFactor() {
+        if (tokens[pos] === '(') {
+          pos++;
+          const node = parseExpr();
+          if (tokens[pos] !== ')') throw new Error('括號不匹配');
+          pos++;
+          return node;
+        } else {
+          return { type: 'word', value: tokens[pos++] };
+        }
+      }
+      const ast = parseExpr();
+      if (pos !== tokens.length) throw new Error('語法錯誤');
+      return ast;
+    }
+    
+    function matchBooleanExpr(ast, text) {
+      if (!ast) return false;
+      if (ast.type === 'word') return text.includes(ast.value);
+      if (ast.type === 'and') return matchBooleanExpr(ast.left, text) && matchBooleanExpr(ast.right, text);
+      if (ast.type === 'or') return matchBooleanExpr(ast.left, text) || matchBooleanExpr(ast.right, text);
+      return false;
+    }
+    
+    // pal-helper 狀態
+    function getFilterState() {
+      return {
+        buy: document.getElementById('pal-buy').checked,
+        sell: document.getElementById('pal-sell').checked,
+        keywords: document.getElementById('pal-keyword').value.trim().split(/\s+/).filter(Boolean),
+        code: document.getElementById('pal-code').value.trim(),
+        playsound: document.getElementById('pal-playsound').checked
+      };
+    }
+    
+    // 檢查是否在底部
+    function isAtBottom() {
+      return logDiv.scrollHeight - logDiv.scrollTop - logDiv.clientHeight < 2;
+    }
+    
+    // 自動捲動到底部
+    function scrollToBottom() {
+      if (document.getElementById('pal-autoscroll').checked) {
+        logDiv.scrollTop = logDiv.scrollHeight;
+      }
+    }
+    
+    // 檢查訊息是否符合過濾條件
+    function isMessageHighlighted(data) {
+      const state = getFilterState();
+      let mainWords = [];
+      if (state.buy) mainWords.push('買', '收');
+      if (state.sell) mainWords.push('賣', '出', '售');
+      const rawText = data.Text || '';
+      
+      // 如果沒有任何過濾條件，不算高亮
+      if (state.code === '' && mainWords.length === 0 && state.keywords.length === 0) {
+        return false;
+      }
+      
+      if (state.code) {
+        let ast;
+        try {
+          ast = parseBooleanExpr(state.code);
+        } catch (e) {
+          return false;
+        }
+        return matchBooleanExpr(ast, rawText);
+      }
+      if (mainWords.length === 0) {
+        if (state.keywords.length === 0) return false;
+        const regex = new RegExp(state.keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
+        return regex.test(rawText);
+      } else {
+        const mainRegex = new RegExp(mainWords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i');
+        const keywordRegex = state.keywords.length > 0 ? new RegExp(state.keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'i') : null;
+        return mainRegex.test(rawText) && (!keywordRegex || keywordRegex.test(rawText));
+      }
+    }
+    
+    // 高亮關鍵字
+    function highlightText(text) {
+      const state = getFilterState();
+      let result = text;
+      
+      // 處理買/賣關鍵字
+      let mainWords = [];
+      if (state.buy) mainWords.push('買', '收');
+      if (state.sell) mainWords.push('賣', '出', '售');
+      
+      if (mainWords.length > 0) {
+        const mainRegex = new RegExp(mainWords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+        result = result.replace(mainRegex, m => `<span class="highlight">${m}</span>`);
+      }
+      
+      // 處理一般關鍵字
+      if (state.keywords.length > 0) {
+        const keywordRegex = new RegExp(state.keywords.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'gi');
+        result = result.replace(keywordRegex, m => `<span class="highlight">${m}</span>`);
+      }
+      
+      // 處理 code 搜尋的關鍵字
+      if (state.code) {
+        try {
+          const ast = parseBooleanExpr(state.code);
+          const codeWords = new Set();
+          collectWords(ast, codeWords);
+          codeWords.forEach(word => {
+            const wordRegex = new RegExp(word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+            result = result.replace(wordRegex, m => `<span class="highlight">${m}</span>`);
+          });
+        } catch (e) {
+          // 如果解析失敗，就當作一般關鍵字處理
+          const codeRegex = new RegExp(state.code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+          result = result.replace(codeRegex, m => `<span class="highlight">${m}</span>`);
+        }
+      }
+      
+      return result;
+    }
+    
+    // 收集布林運算式中的所有關鍵字
+    function collectWords(ast, set) {
+      if (!ast) return;
+      if (ast.type === 'word') set.add(ast.value);
+      if (ast.left) collectWords(ast.left, set);
+      if (ast.right) collectWords(ast.right, set);
+    }
+
+    const logDiv = document.getElementById("log");
+    const ws = new WebSocket("ws://localhost:8765");
+    
+    // 儲存所有訊息的陣列
+    let allMessages = [];
+    
+    // 重新渲染所有訊息（用於過濾）
+    function renderAllMessages() {
+      const logDiv = document.getElementById("log");
+      logDiv.innerHTML = '';
+      
+      const state = getFilterState();
+      const hasFilter = state.code !== '' || state.buy || state.sell || state.keywords.length > 0;
+      const now = Date.now();
+      
+      allMessages.forEach(data => {
+        // 過濾超過 BROADCAST_MINUTES 的訊息
+        const timestamp = data.timestamp || "";
+        if (timestamp) {
+          try {
+            const timeStr = timestamp.replace(/[\[\]]/g, '');
+            const msgTime = new Date(timeStr);
+            if (isFinite(msgTime.getTime())) {
+              if (now - msgTime.getTime() > BROADCAST_MINUTES * 60 * 1000) return;
+            }
+          } catch (e) {}
+        }
+        
+        // 如果沒有過濾條件，顯示所有訊息
+        if (!hasFilter) {
+          displayHistoryMessage(data);
+          return;
+        }
+        
+        // 檢查是否符合過濾條件
+        if (isMessageHighlighted(data)) {
+          displayHistoryMessage(data);
+        }
+      });
+      
+      scrollToBottom();
+    }
+
+    ws.onopen = () => console.log("✅ WebSocket 連線成功");
+    ws.onclose = () => console.log("🔌 WebSocket 已關閉");
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      allMessages.push(data);
+      
+      // 檢查新訊息是否在時間範圍內
+      const timestamp = data.timestamp || "";
+      if (timestamp) {
+        try {
+          const timeStr = timestamp.replace(/[\[\]]/g, '');
+          const msgTime = new Date(timeStr);
+          if (isFinite(msgTime.getTime())) {
+            if (Date.now() - msgTime.getTime() > BROADCAST_MINUTES * 60 * 1000) return;
+          }
+        } catch (e) {}
+      }
+      
+      // 檢查是否有任何過濾條件
+      const state = getFilterState();
+      const hasFilter = state.code !== '' || state.buy || state.sell || state.keywords.length > 0;
+      
+      // 如果沒有過濾條件，直接顯示所有新訊息
+      if (!hasFilter) {
+        displayHistoryMessage(data);
+        scrollToBottom();
+        return;
+      }
+      
+      // 如果有過濾條件，檢查是否符合
+      if (isMessageHighlighted(data)) {
+        displayHistoryMessage(data);
+        scrollToBottom();
+        
+        // 播放音效
+                 if (state.playsound) {
+           playSound();
+         }
+       }
+     };
+
+    // 監聽捲動事件
+    logDiv.addEventListener('scroll', () => {
+      const autoscrollCheckbox = document.getElementById('pal-autoscroll');
+      if (isAtBottom()) {
+        // 如果在底部，自動打勾
+        if (!autoscrollCheckbox.checked) {
+          autoscrollCheckbox.checked = true;
+        }
+      } else {
+        // 如果不在底部，取消打勾
+        if (autoscrollCheckbox.checked) {
+          autoscrollCheckbox.checked = false;
+        }
+      }
+    });
+
+    // 添加事件監聽器
+    document.getElementById('pal-buy').addEventListener('change', renderAllMessages);
+    document.getElementById('pal-sell').addEventListener('change', renderAllMessages);
+    document.getElementById('pal-keyword').addEventListener('input', renderAllMessages);
+    document.getElementById('pal-code').addEventListener('input', renderAllMessages);
+
+    // 定時自動刷新訊息，移除超時的廣播
+    setInterval(renderAllMessages, 10000); // 每10秒自動刷新一次
+
+    function copyToClipboard(text, el) {
+      navigator.clipboard.writeText(text).then(() => {
+        const original = el.textContent;
+        el.textContent = "✅ 已複製";
+        setTimeout(() => el.textContent = original, 1200);
+      });
+    }
+  </script>
+</body>
+</html>
